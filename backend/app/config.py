@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # Solana Configuration
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
-    use_solscan: bool = True  # Use Solscan API instead of direct RPC
+    use_solscan: bool = False  # Disabled by default due to API changes - use RPC instead
     solscan_api_url: str = "https://api.solscan.io"
     solscan_api_key: Optional[str] = None  # Optional API key for higher rate limits
     

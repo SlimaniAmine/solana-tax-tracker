@@ -124,12 +124,19 @@ class SolanaAdapter(ChainAdapter):
         from app.config import settings
         if settings.use_solscan:
             try:
-                return await self._fetch_from_solscan(address, limit)
+                print(f"Attempting to fetch from Solscan API...")
+                result = await self._fetch_from_solscan(address, limit)
+                if result:
+                    return result
+                print(f"Solscan returned empty result, falling back to RPC")
             except Exception as e:
-                print(f"Solscan API failed, falling back to RPC: {e}")
-                # Fall through to RPC method
+                print(f"Solscan API failed: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"Falling back to Solana RPC...")
         
         # Fallback to RPC method
+        print(f"Using Solana RPC method...")
         return await self._fetch_from_rpc(address, limit)
     
     async def _fetch_from_solscan(self, address: str, limit: int) -> List[RawTransaction]:
@@ -141,9 +148,11 @@ class SolanaAdapter(ChainAdapter):
         page_size = 50  # Solscan typically returns 50 per page
         
         print(f"Fetching transactions from Solscan for {address}...")
+        print(f"  API URL: {settings.solscan_api_url}")
         
         while len(transactions) < limit:
-            # Solscan API endpoint for account transactions
+            # Try different Solscan API endpoints
+            # Endpoint 1: /account/transactions
             url = f"{settings.solscan_api_url}/account/transactions"
             params = {
                 "account": address,
@@ -152,15 +161,29 @@ class SolanaAdapter(ChainAdapter):
             }
             
             headers = {
-                "User-Agent": "Mozilla/5.0"
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+                "Accept": "application/json"
             }
             if settings.solscan_api_key:
                 headers["token"] = settings.solscan_api_key
             
             try:
+                print(f"  Requesting: {url} with params: account={address}, limit={params['limit']}, offset={offset}")
                 response = await self.client.get(url, params=params, headers=headers, timeout=30.0)
+                
+                print(f"  Response status: {response.status_code}")
+                
+                if response.status_code == 404:
+                    # Try alternative endpoint format
+                    print(f"  Endpoint not found, trying alternative format...")
+                    url = f"{settings.solscan_api_url}/account/transaction"
+                    params = {"address": address, "limit": params["limit"], "offset": offset}
+                    response = await self.client.get(url, params=params, headers=headers, timeout=30.0)
+                
                 response.raise_for_status()
                 data = response.json()
+                
+                print(f"  Response data keys: {list(data.keys()) if isinstance(data, dict) else 'list/other'}")
                 
                 # Solscan returns transactions - check different possible response formats
                 tx_list = data.get("data", []) or data.get("result", []) or (data if isinstance(data, list) else [])
@@ -180,9 +203,10 @@ class SolanaAdapter(ChainAdapter):
                         if converted:
                             transactions.append(RawTransaction(converted))
                         else:
-                            # If conversion fails, try fetching full details
-                            signature = tx.get("txHash") or tx.get("signature") or tx.get("tx_hash")
+                            # If conversion fails, try fetching full details from RPC
+                            signature = tx.get("txHash") or tx.get("signature") or tx.get("tx_hash") or tx.get("hash")
                             if signature:
+                                print(f"    Fetching full details for transaction: {signature[:8]}...")
                                 full_tx = await self._get_transaction_details(signature)
                                 if full_tx:
                                     transactions.append(RawTransaction(full_tx))
@@ -193,18 +217,29 @@ class SolanaAdapter(ChainAdapter):
                 offset += page_size
                 await asyncio.sleep(0.5)  # Small delay between requests
                 
+            except httpx.ConnectError as e:
+                print(f"  Connection error to Solscan: {str(e)}")
+                raise WalletError(f"Cannot connect to Solscan API. Check your network connection.")
+            except httpx.TimeoutException as e:
+                print(f"  Timeout connecting to Solscan: {str(e)}")
+                raise WalletError(f"Timeout connecting to Solscan API. The service may be slow or unavailable.")
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     print(f"  Rate limited by Solscan, waiting 3 seconds...")
                     await asyncio.sleep(3)
                     continue
-                print(f"  Solscan API error {e.response.status_code}: {e.response.text[:200]}")
-                # Fall through to try RPC
+                error_text = e.response.text[:500] if hasattr(e.response, 'text') else str(e)
+                print(f"  Solscan API error {e.response.status_code}: {error_text}")
+                # Don't break, try to continue or fall back
+                if e.response.status_code >= 500:
+                    # Server error, might be temporary
+                    raise WalletError(f"Solscan API server error: {e.response.status_code}")
                 break
             except Exception as e:
                 print(f"  Error fetching from Solscan: {str(e)}")
-                # Fall through to try RPC
-                break
+                import traceback
+                traceback.print_exc()
+                raise WalletError(f"Error fetching from Solscan: {str(e)}")
         
         print(f"Successfully fetched {len(transactions)} transactions from Solscan")
         return transactions[:limit]
@@ -289,37 +324,50 @@ class SolanaAdapter(ChainAdapter):
     
     async def _fetch_from_rpc(self, address: str, limit: int) -> List[RawTransaction]:
         """Fetch transactions using Solana RPC (fallback method)."""
+        print(f"Fetching transactions from Solana RPC for {address}...")
+        print(f"  RPC URL: {self.rpc_url}")
+        
         # Get transaction signatures
         all_signatures = []
         before = None
         max_iterations = 10
         iteration = 0
         
-        while iteration < max_iterations:
-            params = {
-                "limit": min(limit - len(all_signatures), 1000)
-            }
-            if before:
-                params["before"] = before
-            
-            signatures_result = await self._rpc_call(
-                "getSignaturesForAddress",
-                [address, params]
-            )
-            
-            if not signatures_result:
-                break
-            
-            all_signatures.extend(signatures_result)
-            
-            if len(all_signatures) >= limit or len(signatures_result) < 1000:
-                break
-            
-            before = signatures_result[-1]["signature"]
-            iteration += 1
-            await asyncio.sleep(0.5)
+        try:
+            while iteration < max_iterations:
+                params = {
+                    "limit": min(limit - len(all_signatures), 1000)
+                }
+                if before:
+                    params["before"] = before
+                
+                print(f"  Fetching signatures (iteration {iteration + 1}/{max_iterations})...")
+                signatures_result = await self._rpc_call(
+                    "getSignaturesForAddress",
+                    [address, params]
+                )
+                
+                if not signatures_result:
+                    print(f"  No signatures returned")
+                    break
+                
+                all_signatures.extend(signatures_result)
+                print(f"  Got {len(signatures_result)} signatures (total: {len(all_signatures)})")
+                
+                if len(all_signatures) >= limit or len(signatures_result) < 1000:
+                    break
+                
+                before = signatures_result[-1]["signature"]
+                iteration += 1
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"  Error fetching signatures from RPC: {e}")
+            import traceback
+            traceback.print_exc()
+            raise WalletError(f"Failed to fetch transaction signatures: {str(e)}")
         
         if not all_signatures:
+            print(f"  No transaction signatures found for address {address}")
             return []
         
         signatures = [sig["signature"] for sig in all_signatures]
@@ -329,10 +377,17 @@ class SolanaAdapter(ChainAdapter):
         transactions = []
         batch_size = 3
         
+        print(f"Fetching {len(signatures)} transaction details in batches of {batch_size}...")
+        
         for i in range(0, len(signatures), batch_size):
             batch = signatures[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (len(signatures) + batch_size - 1) // batch_size
+            
             if i > 0:
                 await asyncio.sleep(1.0)
+            
+            print(f"  Fetching batch {batch_num}/{total_batches} ({len(batch)} transactions)...")
             
             tasks = [
                 self._rpc_call("getTransaction", [
@@ -344,14 +399,20 @@ class SolanaAdapter(ChainAdapter):
             
             try:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                successful = 0
                 for result in results:
                     if isinstance(result, Exception):
+                        print(f"    Error in batch: {result}")
                         continue
                     if result:
                         transactions.append(RawTransaction(result))
-            except:
+                        successful += 1
+                print(f"    Successfully fetched {successful}/{len(batch)} transactions in this batch")
+            except Exception as e:
+                print(f"    Error processing batch: {e}")
                 continue
         
+        print(f"Successfully fetched {len(transactions)} full transactions from RPC")
         return transactions[:limit]
     
     def parse_transaction(self, raw_tx: RawTransaction, wallet_address: Optional[str] = None) -> List[Transaction]:
