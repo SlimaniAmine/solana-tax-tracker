@@ -1,11 +1,12 @@
 import { useLocation, useNavigate } from 'react-router-dom'
 import ResultsDisplay from '../components/ResultsDisplay'
-import type { TaxReport } from '../services/types'
+import type { TaxReport, TaxCalculationRequest } from '../services/types'
 
 function Results() {
   const location = useLocation()
   const navigate = useNavigate()
   const report = location.state?.report as TaxReport | undefined
+  const calculationRequest = location.state?.calculationRequest as TaxCalculationRequest | undefined
 
   if (!report) {
     return (
@@ -34,7 +35,7 @@ function Results() {
           ← Back
         </button>
       </div>
-      <ResultsDisplay report={report} />
+      <ResultsDisplay report={report} calculationRequest={calculationRequest} />
     </div>
   )
 }

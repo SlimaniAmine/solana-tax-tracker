@@ -54,16 +54,29 @@ async def calculate_tax(
         async with adapter:
             for address in request.wallet_addresses:
                 try:
+                    print(f"Fetching transactions for wallet: {address}")
                     raw_txs = await adapter.fetch_transactions(
                         address,
                         limit=settings.max_transactions_per_wallet
                     )
-                    for raw_tx in raw_txs:
-                        parsed = adapter.parse_transaction(raw_tx)
+                    print(f"Fetched {len(raw_txs)} raw transactions for {address}")
+                    for idx, raw_tx in enumerate(raw_txs):
+                        print(f"Parsing transaction {idx+1}/{len(raw_txs)}...")
+                        parsed = adapter.parse_transaction(raw_tx, wallet_address=address)
+                        print(f"  -> Parsed {len(parsed)} transactions from raw tx")
+                        # Count staking rewards in parsed transactions
+                        from app.models.transaction import TransactionType
+                        rewards = [t for t in parsed if t.type == TransactionType.STAKE_REWARD]
+                        if rewards:
+                            print(f"  -> Found {len(rewards)} staking rewards in this transaction!")
+                            for r in rewards:
+                                print(f"      Reward: {r.amount_out} SOL at {r.timestamp}")
                         all_transactions.extend(parsed)
                 except Exception as e:
                     # Log error but continue
                     print(f"Error processing wallet {address}: {e}")
+                    import traceback
+                    traceback.print_exc()
     
     # TODO: Fetch CEX transactions if include_cex is True
     # This would require storing CEX transactions from previous uploads
@@ -76,10 +89,13 @@ async def calculate_tax(
     
     async with price_service, currency_service:
         normalized = await normalizer.normalize(all_transactions, fetch_prices=True)
+        print(f"Normalized {len(normalized)} transactions")
         filtered = normalizer.filter_by_year(normalized, request.year)
+        print(f"Filtered to {len(filtered)} transactions for year {request.year}")
     
     # Calculate tax
     report = tax_engine.calculate_tax(filtered, request.year)
+    print(f"Tax report generated with {len(filtered)} transactions")
     
     # Return Excel if requested
     if format.lower() == "excel":

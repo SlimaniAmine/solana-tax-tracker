@@ -30,11 +30,19 @@ export const walletApi = {
 }
 
 export const taxApi = {
-  calculate: async (request: TaxCalculationRequest, format: string = 'json'): Promise<TaxReport> => {
-    const response = await api.post<TaxReport>('/tax/calculate', request, {
-      params: { format }
-    })
-    return response.data
+  calculate: async (request: TaxCalculationRequest, format: string = 'json'): Promise<TaxReport | Blob> => {
+    if (format === 'excel') {
+      const response = await api.post('/tax/calculate', request, {
+        params: { format: 'excel' },
+        responseType: 'blob'
+      })
+      return response.data
+    } else {
+      const response = await api.post<TaxReport>('/tax/calculate', request, {
+        params: { format: 'json' }
+      })
+      return response.data
+    }
   },
   
   listCountries: async (): Promise<{ countries: Country[] }> => {

@@ -35,8 +35,18 @@ function Home() {
         include_cex: true,
       }, 'json')
 
-      // Navigate to results page with data
-      navigate('/results', { state: { report: result } })
+      // Navigate to results page with data and original request
+      navigate('/results', { 
+        state: { 
+          report: result,
+          calculationRequest: {
+            country,
+            year,
+            wallet_addresses: validWallets,
+            include_cex: true,
+          }
+        } 
+      })
     } catch (err: any) {
       setError(err.response?.data?.detail || err.message || 'Failed to process tax calculation')
     } finally {
