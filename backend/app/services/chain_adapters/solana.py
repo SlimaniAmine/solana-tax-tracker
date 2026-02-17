@@ -113,156 +113,192 @@ class SolanaAdapter(ChainAdapter):
     
     async def fetch_transactions(self, address: str, limit: int = 1000) -> List[RawTransaction]:
         """
-        Fetch transactions from Solana.
+        Fetch transactions from Solana using Solscan API.
         
-        Uses Solscan API if available, otherwise falls back to Solana RPC.
+        Primary method: Solscan API (better indexing, more reliable)
+        Fallback: Solana RPC (only if Solscan fails)
         """
         if not self.validate_address(address):
             raise WalletError(f"Invalid Solana address: {address}")
         
-        # Try Solscan API first (more reliable)
         from app.config import settings
+        
+        # PRIMARY METHOD: Use Solscan API
         if settings.use_solscan:
             try:
-                print(f"Attempting to fetch from Solscan API...")
+                print(f"[SOLSCAN] Fetching transactions from Solscan API for {address}...")
                 result = await self._fetch_from_solscan(address, limit)
-                if result:
+                if result and len(result) > 0:
+                    print(f"[SOLSCAN] Successfully fetched {len(result)} transactions from Solscan")
                     return result
-                print(f"Solscan returned empty result, falling back to RPC")
+                else:
+                    print(f"[SOLSCAN] Solscan returned empty result, trying RPC fallback...")
             except Exception as e:
-                print(f"Solscan API failed: {e}")
+                print(f"[SOLSCAN] Solscan API failed: {e}")
                 import traceback
                 traceback.print_exc()
-                print(f"Falling back to Solana RPC...")
+                print(f"[SOLSCAN] Falling back to Solana RPC...")
         
-        # Fallback to RPC method
-        print(f"Using Solana RPC method...")
+        # FALLBACK: Use RPC only if Solscan is disabled or fails
+        print(f"[RPC] Using Solana RPC as fallback method...")
         return await self._fetch_from_rpc(address, limit)
     
     async def _fetch_from_solscan(self, address: str, limit: int) -> List[RawTransaction]:
-        """Fetch transactions using Solscan API."""
+        """Fetch transactions using Solscan Pro API - PRIMARY METHOD."""
         from app.config import settings
         
-        transactions = []
-        offset = 0
-        page_size = 50  # Solscan typically returns 50 per page
+        # Check if API key is provided (required for Solscan Pro API)
+        if not settings.solscan_api_key:
+            print(f"[SOLSCAN] No API key provided. Solscan Pro API requires authentication.")
+            print(f"[SOLSCAN] Falling back to RPC method...")
+            return []
         
-        print(f"Fetching transactions from Solscan for {address}...")
-        print(f"  API URL: {settings.solscan_api_url}")
+        transactions = []
+        before = None  # Use 'before' parameter for pagination (signature of last transaction)
+        # Solscan Pro API allows limit values: 10, 20, 30, 40
+        page_size = 40  # Use max allowed limit
+        
+        print(f"[SOLSCAN] Fetching transactions from Solscan Pro API for {address}...")
+        print(f"[SOLSCAN]   API URL: {settings.solscan_api_url}")
+        print(f"[SOLSCAN]   Target limit: {limit} transactions")
         
         while len(transactions) < limit:
-            # Try different Solscan API endpoints
-            # Endpoint 1: /account/transactions
-            url = f"{settings.solscan_api_url}/account/transactions"
+            # Solscan Pro API v2.0 endpoint
+            url = f"{settings.solscan_api_url}/v2.0/account/transactions"
+            
+            # Calculate limit for this request (must be 10, 20, 30, or 40)
+            remaining = limit - len(transactions)
+            request_limit = min(page_size, remaining)
+            # Round down to nearest allowed value
+            if request_limit > 30:
+                request_limit = 40
+            elif request_limit > 20:
+                request_limit = 30
+            elif request_limit > 10:
+                request_limit = 20
+            else:
+                request_limit = 10
+            
             params = {
-                "account": address,
-                "limit": min(page_size, limit - len(transactions)),
-                "offset": offset
+                "address": address,  # Note: parameter is 'address', not 'account'
+                "limit": request_limit
             }
+            if before:
+                params["before"] = before
             
             headers = {
                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "token": settings.solscan_api_key  # Required authentication header
             }
-            if settings.solscan_api_key:
-                headers["token"] = settings.solscan_api_key
             
             try:
-                print(f"  Requesting: {url} with params: account={address}, limit={params['limit']}, offset={offset}")
+                print(f"[SOLSCAN]   Requesting: {url}")
+                print(f"[SOLSCAN]   Params: address={address}, limit={request_limit}, before={before[:16] if before else 'None'}...")
+                
                 response = await self.client.get(url, params=params, headers=headers, timeout=30.0)
                 
-                print(f"  Response status: {response.status_code}")
+                print(f"[SOLSCAN]   Response status: {response.status_code}")
                 
-                if response.status_code == 404:
-                    # Try alternative endpoint format
-                    print(f"  Endpoint not found, trying alternative format...")
-                    url = f"{settings.solscan_api_url}/account/transaction"
-                    params = {"address": address, "limit": params["limit"], "offset": offset}
-                    response = await self.client.get(url, params=params, headers=headers, timeout=30.0)
-                
-                response.raise_for_status()
-                data = response.json()
-                
-                print(f"  Response data keys: {list(data.keys()) if isinstance(data, dict) else 'list/other'}")
-                
-                # Solscan returns transactions - check different possible response formats
-                tx_list = data.get("data", []) or data.get("result", []) or (data if isinstance(data, list) else [])
-                
-                if not tx_list:
-                    print(f"  No more transactions from Solscan")
+                if response.status_code == 401:
+                    print(f"[SOLSCAN]   Authentication failed (401). Check your API key.")
+                    print(f"[SOLSCAN]   Response: {response.text[:200]}")
+                    break
+                elif response.status_code == 429:
+                    print(f"[SOLSCAN]   Rate limited (429), waiting 5 seconds...")
+                    await asyncio.sleep(5)
+                    continue
+                elif response.status_code != 200:
+                    print(f"[SOLSCAN]   HTTP error {response.status_code}: {response.text[:200]}")
                     break
                 
-                print(f"  Fetched {len(tx_list)} transactions from Solscan (offset: {offset}, total so far: {len(transactions) + len(tx_list)})")
+                data = response.json()
+                print(f"[SOLSCAN]   Response type: {type(data)}")
+                
+                # Solscan Pro API v2.0 returns transactions in a list format
+                tx_list = None
+                if isinstance(data, list):
+                    tx_list = data
+                elif isinstance(data, dict):
+                    tx_list = data.get("data", []) or data.get("result", []) or data.get("transactions", [])
+                
+                if not tx_list:
+                    print(f"[SOLSCAN]   No transactions in response")
+                    break
+                
+                print(f"[SOLSCAN]   Found {len(tx_list)} transactions in response")
                 
                 # Convert Solscan format to our RawTransaction format
-                for tx in tx_list:
-                    # Solscan may provide full transaction data or just signatures
+                for tx_idx, tx in enumerate(tx_list):
                     if isinstance(tx, dict):
                         # Try to convert Solscan format directly
                         converted = self._convert_solscan_to_rpc_format(tx)
                         if converted:
                             transactions.append(RawTransaction(converted))
                         else:
-                            # If conversion fails, try fetching full details from RPC
+                            # If conversion fails, fetch full details from RPC
                             signature = tx.get("txHash") or tx.get("signature") or tx.get("tx_hash") or tx.get("hash")
                             if signature:
-                                print(f"    Fetching full details for transaction: {signature[:8]}...")
+                                print(f"[SOLSCAN]     Fetching full details for tx {tx_idx+1}: {signature[:8]}...")
                                 full_tx = await self._get_transaction_details(signature)
                                 if full_tx:
                                     transactions.append(RawTransaction(full_tx))
                 
-                if len(tx_list) < page_size:
-                    break  # No more transactions
+                # Update 'before' for next page (use signature of last transaction)
+                if tx_list and len(tx_list) > 0:
+                    last_tx = tx_list[-1]
+                    before = last_tx.get("txHash") or last_tx.get("signature") or last_tx.get("tx_hash") or last_tx.get("hash")
                 
-                offset += page_size
-                await asyncio.sleep(0.5)  # Small delay between requests
+                # Check if we got fewer transactions than requested (end of data)
+                if len(tx_list) < request_limit:
+                    print(f"[SOLSCAN]   No more transactions (got {len(tx_list)} < {request_limit})")
+                    break
                 
-            except httpx.ConnectError as e:
-                print(f"  Connection error to Solscan: {str(e)}")
-                raise WalletError(f"Cannot connect to Solscan API. Check your network connection.")
-            except httpx.TimeoutException as e:
-                print(f"  Timeout connecting to Solscan: {str(e)}")
-                raise WalletError(f"Timeout connecting to Solscan API. The service may be slow or unavailable.")
+                await asyncio.sleep(0.5)  # Small delay between requests to avoid rate limiting
+                        
             except httpx.HTTPStatusError as e:
-                if e.response.status_code == 429:
-                    print(f"  Rate limited by Solscan, waiting 3 seconds...")
-                    await asyncio.sleep(3)
+                if e.response.status_code == 401:
+                    print(f"[SOLSCAN]   Authentication failed (401). Check your API key.")
+                    print(f"[SOLSCAN]   Response: {e.response.text[:200]}")
+                    break
+                elif e.response.status_code == 429:
+                    print(f"[SOLSCAN]   Rate limited (429), waiting 5 seconds...")
+                    await asyncio.sleep(5)
                     continue
-                error_text = e.response.text[:500] if hasattr(e.response, 'text') else str(e)
-                print(f"  Solscan API error {e.response.status_code}: {error_text}")
-                # Don't break, try to continue or fall back
-                if e.response.status_code >= 500:
-                    # Server error, might be temporary
-                    raise WalletError(f"Solscan API server error: {e.response.status_code}")
-                break
+                else:
+                    print(f"[SOLSCAN]   HTTP error {e.response.status_code}: {e.response.text[:200]}")
+                    break
             except Exception as e:
-                print(f"  Error fetching from Solscan: {str(e)}")
+                print(f"[SOLSCAN]   Error: {str(e)}")
                 import traceback
                 traceback.print_exc()
-                raise WalletError(f"Error fetching from Solscan: {str(e)}")
+                break
         
-        print(f"Successfully fetched {len(transactions)} transactions from Solscan")
+        print(f"[SOLSCAN] Successfully fetched {len(transactions)} transactions from Solscan")
         return transactions[:limit]
     
     async def _get_transaction_details(self, signature: str) -> Optional[Dict[str, Any]]:
         """Get full transaction details for a signature."""
-        # Try Solscan transaction detail endpoint first
+        # Try Solscan Pro API transaction detail endpoint first
         from app.config import settings
         
-        try:
-            url = f"{settings.solscan_api_url}/transaction"
-            params = {"tx": signature}
-            headers = {}
-            if settings.solscan_api_key:
-                headers["token"] = settings.solscan_api_key
-            
-            response = await self.client.get(url, params=params, headers=headers, timeout=10.0)
-            if response.status_code == 200:
-                data = response.json()
-                # Convert Solscan format to RPC-like format for compatibility
-                return self._convert_solscan_to_rpc_format(data)
-        except:
+        if not settings.solscan_api_key:
+            # Skip Solscan if no API key
             pass
+        else:
+            try:
+                # Try v2.0 transaction endpoint
+                url = f"{settings.solscan_api_url}/v2.0/transaction"
+                params = {"tx": signature}
+                headers = {"token": settings.solscan_api_key}
+                
+                response = await self.client.get(url, params=params, headers=headers, timeout=10.0)
+                if response.status_code == 200:
+                    data = response.json()
+                    # Convert Solscan format to RPC-like format for compatibility
+                    return self._convert_solscan_to_rpc_format(data)
+            except:
+                pass
         
         # Fallback to RPC
         try:
