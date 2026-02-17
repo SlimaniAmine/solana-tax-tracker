@@ -15,7 +15,15 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
     
     # Solana Configuration
-    solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    solana_rpc_url: str = "https://api.mainnet-beta.solana.com"  # Only used as fallback
+    use_solscan: bool = True  # Use Solscan API as primary method
+<<<<<<< Current (Your changes)
+    solscan_api_url: str = "https://api.solscan.io"
+    solscan_api_key: Optional[str] = None  # Optional API key for higher rate limits
+=======
+    solscan_api_url: str = "https://pro-api.solscan.io"  # Solscan Pro API base URL
+    solscan_api_key: Optional[str] = None  # Required API key for Solscan Pro API
+>>>>>>> Incoming (Background Agent changes)
     
     # Price Service Configuration
     coingecko_api_key: Optional[str] = None

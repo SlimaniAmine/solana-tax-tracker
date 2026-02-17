@@ -45,10 +45,18 @@ class TransactionNormalizer:
         # Remove duplicates based on transaction ID
         seen_ids: Set[str] = set()
         unique_transactions = []
+        duplicates = 0
         for tx in transactions:
             if tx.id not in seen_ids:
                 seen_ids.add(tx.id)
                 unique_transactions.append(tx)
+            else:
+                duplicates += 1
+                print(f"[NORMALIZE] Duplicate transaction detected: {tx.id} (type: {tx.type}, timestamp: {tx.timestamp})")
+        
+        if duplicates > 0:
+            print(f"[NORMALIZE] Removed {duplicates} duplicate transactions")
+        print(f"[NORMALIZE] Total transactions: {len(transactions)}, Unique: {len(unique_transactions)}")
         
         # Sort by timestamp
         unique_transactions.sort(key=lambda x: x.timestamp)
@@ -69,50 +77,67 @@ class TransactionNormalizer:
         """
         from decimal import Decimal
         
-        # Fetch USD prices
-        if tx.token_in and not tx.price_in_usd:
+        # Fetch USD prices for token_in
+        if tx.token_in and not tx.price_in_usd and tx.amount_in:
             try:
+                print(f"[ENRICH] Fetching price for {tx.token_in.symbol} at {tx.timestamp.isoformat()}")
                 price_usd = await self.price_service.get_price(
                     tx.token_in.symbol,
                     tx.timestamp
                 )
                 if price_usd:
                     tx.price_in_usd = price_usd
+                    # Calculate total USD value
+                    usd_value = tx.amount_in * price_usd
+                    print(f"[ENRICH] {tx.token_in.symbol}: {tx.amount_in} * {price_usd} USD = {usd_value} USD")
                     # Convert to EUR
-                    if tx.amount_in and tx.amount_in > 0:
-                        usd_value = tx.amount_in * price_usd
-                        eur_value = await self.currency_service.convert(
-                            usd_value,
-                            "USD",
-                            "EUR",
-                            tx.timestamp.date()
-                        )
-                        tx.price_in_eur = eur_value / tx.amount_in
+                    eur_value = await self.currency_service.convert(
+                        usd_value,
+                        "USD",
+                        "EUR",
+                        tx.timestamp.date()
+                    )
+                    # Store price per unit in EUR
+                    tx.price_in_eur = eur_value / tx.amount_in if tx.amount_in > 0 else Decimal("0")
+                    print(f"[ENRICH] {tx.token_in.symbol}: {usd_value} USD -> {eur_value} EUR (price: {tx.price_in_eur} EUR per unit)")
+                else:
+                    print(f"[ENRICH] WARNING: Could not fetch price for {tx.token_in.symbol} at {tx.timestamp.isoformat()}")
             except Exception as e:
                 # Log error but continue
-                print(f"Error fetching price for {tx.token_in.symbol}: {e}")
+                print(f"[ENRICH] Error fetching price for {tx.token_in.symbol}: {e}")
+                import traceback
+                traceback.print_exc()
         
-        if tx.token_out and not tx.price_out_usd:
+        # Fetch USD prices for token_out
+        if tx.token_out and not tx.price_out_usd and tx.amount_out:
             try:
+                print(f"[ENRICH] Fetching price for {tx.token_out.symbol} at {tx.timestamp.isoformat()}")
                 price_usd = await self.price_service.get_price(
                     tx.token_out.symbol,
                     tx.timestamp
                 )
                 if price_usd:
                     tx.price_out_usd = price_usd
+                    # Calculate total USD value
+                    usd_value = tx.amount_out * price_usd
+                    print(f"[ENRICH] {tx.token_out.symbol}: {tx.amount_out} * {price_usd} USD = {usd_value} USD")
                     # Convert to EUR
-                    if tx.amount_out and tx.amount_out > 0:
-                        usd_value = tx.amount_out * price_usd
-                        eur_value = await self.currency_service.convert(
-                            usd_value,
-                            "USD",
-                            "EUR",
-                            tx.timestamp.date()
-                        )
-                        tx.price_out_eur = eur_value / tx.amount_out
+                    eur_value = await self.currency_service.convert(
+                        usd_value,
+                        "USD",
+                        "EUR",
+                        tx.timestamp.date()
+                    )
+                    # Store price per unit in EUR
+                    tx.price_out_eur = eur_value / tx.amount_out if tx.amount_out > 0 else Decimal("0")
+                    print(f"[ENRICH] {tx.token_out.symbol}: {usd_value} USD -> {eur_value} EUR (price: {tx.price_out_eur} EUR per unit)")
+                else:
+                    print(f"[ENRICH] WARNING: Could not fetch price for {tx.token_out.symbol} at {tx.timestamp.isoformat()}")
             except Exception as e:
                 # Log error but continue
-                print(f"Error fetching price for {tx.token_out.symbol}: {e}")
+                print(f"[ENRICH] Error fetching price for {tx.token_out.symbol}: {e}")
+                import traceback
+                traceback.print_exc()
         
         # Convert fee to EUR if present
         if tx.fee and not tx.fee_eur:

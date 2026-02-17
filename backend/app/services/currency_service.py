@@ -65,11 +65,16 @@ class CurrencyService:
             if self.api_key:
                 params["api_key"] = self.api_key
             
+            print(f"[FX] Fetching exchange rate {from_currency} -> {to_currency} for {date_str}")
             response = await self.client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             
             rates = data.get("rates", {})
+            if not rates:
+                print(f"[FX] WARNING: No rates in response for {date_str}")
+                raise CurrencyServiceError(f"No exchange rates available for {date_str}")
+            
             from_rate = Decimal(str(rates.get(from_currency.upper(), 1)))
             to_rate = Decimal(str(rates.get(to_currency.upper(), 1)))
             
@@ -78,6 +83,7 @@ class CurrencyService:
             
             # Calculate rate: to_currency / from_currency
             exchange_rate = to_rate / from_rate
+            print(f"[FX] Exchange rate {from_currency} -> {to_currency}: {exchange_rate} on {date_str}")
             
             # Cache the result
             self.cache.set(cache_key, str(exchange_rate), ttl_seconds=86400 * 365)  # Cache for 1 year

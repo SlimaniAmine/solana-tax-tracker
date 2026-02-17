@@ -40,11 +40,21 @@ class GermanyTaxCalculator(TaxRuleEngine):
             if tx.type == TransactionType.STAKE_REWARD
         ]
         
+        print(f"[TAX CALC] Found {len(staking_rewards)} staking rewards for year {year}")
+        for idx, tx in enumerate(staking_rewards):
+            print(f"  Reward {idx+1}: {tx.amount_out} SOL, price_out_eur={tx.price_out_eur}, timestamp={tx.timestamp}")
+        
         # Calculate staking rewards total (treated as income)
-        staking_rewards_eur = sum(
-            (tx.price_out_eur * tx.amount_out) if tx.price_out_eur and tx.amount_out else Decimal("0")
-            for tx in staking_rewards
-        )
+        staking_rewards_eur = Decimal("0")
+        for tx in staking_rewards:
+            if tx.amount_out and tx.price_out_eur:
+                reward_value = tx.price_out_eur * tx.amount_out
+                staking_rewards_eur += reward_value
+                print(f"  Adding reward value: {tx.amount_out} SOL * {tx.price_out_eur} EUR = {reward_value} EUR")
+            else:
+                print(f"  WARNING: Reward missing price or amount: amount_out={tx.amount_out}, price_out_eur={tx.price_out_eur}")
+        
+        print(f"[TAX CALC] Total staking rewards EUR: {staking_rewards_eur}")
         
         # Process capital gains/losses (BUY, SELL, SWAP)
         capital_gains_transactions = [

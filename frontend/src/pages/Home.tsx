@@ -35,10 +35,31 @@ function Home() {
         include_cex: true,
       }, 'json')
 
-      // Navigate to results page with data
-      navigate('/results', { state: { report: result } })
+      // Navigate to results page with data and original request
+      navigate('/results', { 
+        state: { 
+          report: result,
+          calculationRequest: {
+            country,
+            year,
+            wallet_addresses: validWallets,
+            include_cex: true,
+          }
+        } 
+      })
     } catch (err: any) {
-      setError(err.response?.data?.detail || err.message || 'Failed to process tax calculation')
+      console.error('Tax calculation error:', err)
+      let errorMessage = 'Failed to process tax calculation'
+      
+      if (err.code === 'ECONNREFUSED' || err.message?.includes('Network Error')) {
+        errorMessage = 'Cannot connect to backend server. Please make sure the backend is running on http://localhost:8000'
+      } else if (err.response?.data?.detail) {
+        errorMessage = err.response.data.detail
+      } else if (err.message) {
+        errorMessage = err.message
+      }
+      
+      setError(errorMessage)
     } finally {
       setLoading(false)
     }

@@ -1,61 +1,38 @@
 import { useState } from 'react'
-import type { TaxReport } from '../services/types'
-import { reportsApi } from '../services/api'
-import * as XLSX from 'xlsx'
+import type { TaxReport, TaxCalculationRequest } from '../services/types'
+import { taxApi } from '../services/api'
 
 interface ResultsDisplayProps {
   report: TaxReport
+  calculationRequest?: TaxCalculationRequest
 }
 
-function ResultsDisplay({ report }: ResultsDisplayProps) {
+function ResultsDisplay({ report, calculationRequest }: ResultsDisplayProps) {
   const [exporting, setExporting] = useState(false)
 
   const handleExportExcel = async () => {
     setExporting(true)
     try {
-      // Generate Excel on frontend using SheetJS
-      const ws = XLSX.utils.json_to_sheet([
-        {
-          'Country': report.country,
-          'Year': report.year,
-          'Total Gains (EUR)': report.summary.total_gains_eur,
-          'Total Losses (EUR)': report.summary.total_losses_eur,
-          'Net Gain/Loss (EUR)': report.summary.net_gain_loss_eur,
-          'Staking Rewards (EUR)': report.summary.staking_rewards_eur,
-          'Taxable Amount (EUR)': report.summary.taxable_amount_eur,
-          'Transaction Count': report.summary.transaction_count,
-        }
-      ])
-      const wb = XLSX.utils.book_new()
-      XLSX.utils.book_append_sheet(wb, ws, 'Summary')
-      
-      if (report.transactions.length > 0) {
-        const txData = report.transactions.map(tx => ({
-          'ID': tx.id,
-          'Timestamp': tx.timestamp,
-          'Type': tx.type,
-          'Chain': tx.chain,
-          'Source': tx.source,
-          'Token In': tx.token_in?.symbol || '',
-          'Amount In': tx.amount_in || '',
-          'Token Out': tx.token_out?.symbol || '',
-          'Amount Out': tx.amount_out || '',
-          'Price In (USD)': tx.price_in_usd || '',
-          'Price Out (USD)': tx.price_out_usd || '',
-          'Price In (EUR)': tx.price_in_eur || '',
-          'Price Out (EUR)': tx.price_out_eur || '',
-          'Cost Basis (EUR)': tx.cost_basis_eur || '',
-          'Proceeds (EUR)': tx.proceeds_eur || '',
-          'Gain/Loss (EUR)': tx.gain_loss_eur || '',
-          'Holding Period (Days)': tx.holding_period_days || '',
-          'Fee (EUR)': tx.fee_eur || '',
-          'Audit Notes': tx.audit_notes || '',
-        }))
-        const txWs = XLSX.utils.json_to_sheet(txData)
-        XLSX.utils.book_append_sheet(wb, txWs, 'Transactions')
+      // Use backend API to generate Excel file
+      // Use stored calculation request if available, otherwise use report data
+      const request: TaxCalculationRequest = calculationRequest || {
+        country: report.country,
+        year: report.year,
+        wallet_addresses: [],
+        include_cex: false,
       }
       
-      XLSX.writeFile(wb, `tax-report-${report.country}-${report.year}.xlsx`)
+      const response = await taxApi.calculate(request, 'excel') as Blob
+      
+      // Download the Excel file
+      const url = window.URL.createObjectURL(response)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `tax-report-${report.country}-${report.year}.xlsx`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
     } catch (err) {
       console.error('Error exporting Excel:', err)
       alert('Error exporting Excel file. Please try again.')

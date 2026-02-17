@@ -76,28 +76,41 @@ class PriceService:
         
         try:
             # CoinGecko historical price endpoint
+            # Format: dd-mm-yyyy (e.g., "19-01-2026")
+            date_str = timestamp.strftime("%d-%m-%Y")
             url = f"{self.base_url}/coins/{coingecko_id}/history"
             params = {
-                "date": timestamp.strftime("%d-%m-%Y"),
+                "date": date_str,
                 "localization": "false"
             }
             
             if self.api_key:
                 params["x_cg_demo_api_key"] = self.api_key
             
+            print(f"[PRICE] Fetching price for {token_symbol} on {date_str} (timestamp: {timestamp.isoformat()})")
             response = await self.client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             
             # Extract price from response
             market_data = data.get("market_data", {})
+            if not market_data:
+                print(f"[PRICE] WARNING: No market_data in response for {token_symbol} on {date_str}")
+                return None
+            
             current_price = market_data.get("current_price", {})
+            if not current_price:
+                print(f"[PRICE] WARNING: No current_price in market_data for {token_symbol} on {date_str}")
+                return None
+            
             price = current_price.get(currency.lower())
             
             if price is None:
+                print(f"[PRICE] WARNING: No {currency} price found for {token_symbol} on {date_str}")
                 return None
             
             price_decimal = Decimal(str(price))
+            print(f"[PRICE] Found price for {token_symbol}: {price_decimal} {currency.upper()} on {date_str}")
             
             # Cache the result
             self.cache.set(cache_key, str(price_decimal), ttl_seconds=86400)  # Cache for 24 hours
